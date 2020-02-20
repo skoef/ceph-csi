@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 
 	csicommon "github.com/ceph/ceph-csi/pkg/csi-common"
@@ -57,6 +58,7 @@ type NodeServer struct {
 //   - Map the image (creates a device)
 //   - Create the staging file/directory under staging path
 //   - Stage the device (mount the device mapped for image)
+// nolint: gocyclo
 func (ns *NodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
 	if err := util.ValidateNodeStageVolumeRequest(req); err != nil {
 		return nil, err
@@ -89,7 +91,15 @@ func (ns *NodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 	defer ns.VolumeLocks.Release(volID)
 
 	stagingParentPath := req.GetStagingTargetPath()
-	stagingTargetPath := getStagingTargetPath(req)
+
+	// check is it a static volume
+	staticVol := false
+	val, ok := req.GetVolumeContext()["staticVolume"]
+	if ok {
+		if staticVol, err = strconv.ParseBool(val); err != nil {
+			return nil, status.Error(codes.InvalidArgument, err.Error())
+		}
+	}
 
 	var isNotMnt bool
 	// check if stagingPath is already mounted
@@ -131,6 +141,7 @@ func (ns *NodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 	volOptions.VolID = volID
 
 	isMounted := false
+	isEncrypted := false
 	isStagePathCreated := false
 	devicePath := ""
 
@@ -142,7 +153,7 @@ func (ns *NodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 	}
 	defer func() {
 		if err != nil {
-			ns.undoStagingTransaction(ctx, req, devicePath, isStagePathCreated, isMounted)
+			ns.undoStagingTransaction(ctx, req, devicePath, isStagePathCreated, isMounted, isEncrypted)
 		}
 	}()
 
@@ -179,10 +190,11 @@ func (ns *NodeServer) stageTransaction(ctx context.Context, req *csi.NodeStageVo
 		req.GetVolumeId(), volOptions.Pool, devicePath)
 
 	if volOptions.Encrypted {
-		devicePath, err = ns.processEncryptedDevice(ctx, volOptions, devicePath, cr, req.GetSecrets())
+		devicePath, err = ns.processEncryptedDevice(ctx, volOptions, devicePath, cr)
 		if err != nil {
 			return isStagePathCreated, isMounted, err
 		}
+		isEncrypted = true
 	}
 
 	stagingTargetPath := getStagingTargetPath(req)
@@ -196,7 +208,7 @@ func (ns *NodeServer) stageTransaction(ctx context.Context, req *csi.NodeStageVo
 	isStagePathCreated = true
 
 	// nodeStage Path
-	err = ns.mountVolumeToStagePath(ctx, req, stagingTargetPath, devicePath)
+	err = ns.mountVolumeToStagePath(ctx, req, staticVol, stagingTargetPath, devicePath)
 	if err != nil {
 		return isStagePathCreated, isMounted, err
 	}
@@ -208,7 +220,7 @@ func (ns *NodeServer) stageTransaction(ctx context.Context, req *csi.NodeStageVo
 	return isStagePathCreated, isMounted, err
 }
 
-func (ns *NodeServer) undoStagingTransaction(ctx context.Context, req *csi.NodeStageVolumeRequest, devicePath string, isStagePathCreated, isMounted bool) {
+func (ns *NodeServer) undoStagingTransaction(ctx context.Context, req *csi.NodeStageVolumeRequest, devicePath string, isStagePathCreated, isMounted, isEncrypted bool) {
 	var err error
 
 	stagingTargetPath := getStagingTargetPath(req)
@@ -233,7 +245,7 @@ func (ns *NodeServer) undoStagingTransaction(ctx context.Context, req *csi.NodeS
 
 	// Unmapping rbd device
 	if devicePath != "" {
-		err = detachRBDDevice(ctx, devicePath, volID)
+		err = detachRBDDevice(ctx, devicePath, volID, isEncrypted)
 		if err != nil {
 			klog.Errorf(util.Log(ctx, "failed to unmap rbd device: %s for volume %s with error: %v"), devicePath, volID, err)
 			// continue on failure to delete the stash file, as kubernetes will fail to delete the staging path otherwise
@@ -336,7 +348,7 @@ func getLegacyVolumeName(mountPath string) (string, error) {
 	return volName, nil
 }
 
-func (ns *NodeServer) mountVolumeToStagePath(ctx context.Context, req *csi.NodeStageVolumeRequest, stagingPath, devicePath string) error {
+func (ns *NodeServer) mountVolumeToStagePath(ctx context.Context, req *csi.NodeStageVolumeRequest, staticVol bool, stagingPath, devicePath string) error {
 	fsType := req.GetVolumeCapability().GetMount().GetFsType()
 	diskMounter := &mount.SafeFormatAndMount{Interface: ns.mounter, Exec: utilexec.New()}
 	// rbd images are thin-provisioned and return zeros for unwritten areas.  A freshly created
@@ -354,8 +366,8 @@ func (ns *NodeServer) mountVolumeToStagePath(ctx context.Context, req *csi.NodeS
 		klog.Errorf(util.Log(ctx, "failed to get disk format for path %s, error: %v"), devicePath, err)
 		return err
 	}
-	// TODO: update this when adding support for static (pre-provisioned) PVs
-	if existingFormat == "" /* && !staticVol */ {
+
+	if existingFormat == "" && !staticVol {
 		args := []string{}
 		if fsType == "ext4" {
 			args = []string{"-m0", "-Enodiscard,lazy_itable_init=1,lazy_journal_init=1", devicePath}
@@ -371,7 +383,7 @@ func (ns *NodeServer) mountVolumeToStagePath(ctx context.Context, req *csi.NodeS
 		}
 	}
 
-	opt := []string{}
+	opt := []string{"_netdev"}
 	isBlock := req.GetVolumeCapability().GetBlock() != nil
 
 	if isBlock {
@@ -390,16 +402,19 @@ func (ns *NodeServer) mountVolume(ctx context.Context, stagingPath string, req *
 	// Publish Path
 	fsType := req.GetVolumeCapability().GetMount().GetFsType()
 	readOnly := req.GetReadonly()
-	mountFlags := req.GetVolumeCapability().GetMount().GetMountFlags()
+	mountOptions := []string{"bind", "_netdev"}
 	isBlock := req.GetVolumeCapability().GetBlock() != nil
 	targetPath := req.GetTargetPath()
+
+	mountOptions = csicommon.ConstructMountOptions(mountOptions, req.GetVolumeCapability())
+
 	klog.V(4).Infof(util.Log(ctx, "target %v\nisBlock %v\nfstype %v\nstagingPath %v\nreadonly %v\nmountflags %v\n"),
-		targetPath, isBlock, fsType, stagingPath, readOnly, mountFlags)
-	mountFlags = append(mountFlags, "bind")
+		targetPath, isBlock, fsType, stagingPath, readOnly, mountOptions)
+
 	if readOnly {
-		mountFlags = append(mountFlags, "ro")
+		mountOptions = append(mountOptions, "ro")
 	}
-	if err := util.Mount(stagingPath, targetPath, fsType, mountFlags); err != nil {
+	if err := util.Mount(stagingPath, targetPath, fsType, mountOptions); err != nil {
 		return status.Error(codes.Internal, err.Error())
 	}
 
@@ -561,7 +576,7 @@ func (ns *NodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstag
 
 	// Unmapping rbd device
 	imageSpec := imgInfo.Pool + "/" + imgInfo.ImageName
-	if err = detachRBDImageOrDeviceSpec(ctx, imageSpec, true, imgInfo.NbdAccess, req.GetVolumeId()); err != nil {
+	if err = detachRBDImageOrDeviceSpec(ctx, imageSpec, true, imgInfo.NbdAccess, imgInfo.Encrypted, req.GetVolumeId()); err != nil {
 		klog.Errorf(util.Log(ctx, "error unmapping volume (%s) from staging path (%s): (%v)"), req.GetVolumeId(), stagingTargetPath, err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -577,7 +592,7 @@ func (ns *NodeServer) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstag
 	return &csi.NodeUnstageVolumeResponse{}, nil
 }
 
-// NodeExpandVolume expands the volume
+// NodeExpandVolume resizes rbd volumes
 func (ns *NodeServer) NodeExpandVolume(ctx context.Context, req *csi.NodeExpandVolumeRequest) (*csi.NodeExpandVolumeResponse, error) {
 	volumeID := req.GetVolumeId()
 	if volumeID == "" {
@@ -666,7 +681,7 @@ func (ns *NodeServer) NodeGetCapabilities(ctx context.Context, req *csi.NodeGetC
 	}, nil
 }
 
-func (ns *NodeServer) processEncryptedDevice(ctx context.Context, volOptions *rbdVolume, devicePath string, cr *util.Credentials, secrets map[string]string) (string, error) {
+func (ns *NodeServer) processEncryptedDevice(ctx context.Context, volOptions *rbdVolume, devicePath string, cr *util.Credentials) (string, error) {
 	imageSpec := volOptions.Pool + "/" + volOptions.RbdImageName
 	encrypted, err := util.CheckRbdImageEncrypted(ctx, cr, volOptions.Monitors, imageSpec)
 	if err != nil {
@@ -683,20 +698,31 @@ func (ns *NodeServer) processEncryptedDevice(ctx context.Context, volOptions *rb
 		if err != nil {
 			return "", fmt.Errorf("failed to get disk format for path %s, error: %v", devicePath, err)
 		}
-		if existingFormat != "" {
+
+		switch existingFormat {
+		case "":
+			err = encryptDevice(ctx, volOptions, cr, devicePath)
+			if err != nil {
+				return "", fmt.Errorf("failed to encrypt rbd image %s: %v", imageSpec, err)
+			}
+		case "crypt":
+			klog.Warningf(util.Log(ctx, "rbd image %s is encrypted, but encryption state was not updated"),
+				imageSpec)
+			err = util.SaveRbdImageEncryptionStatus(
+				ctx, cr, volOptions.Monitors, imageSpec, rbdImageEncrypted)
+			if err != nil {
+				return "", fmt.Errorf("failed to update encryption state for rbd image %s", imageSpec)
+			}
+		default:
 			return "", fmt.Errorf("can not encrypt rbdImage %s that already has file system: %s",
 				imageSpec, existingFormat)
-		}
-		err = encryptDevice(ctx, volOptions, secrets, cr, devicePath)
-		if err != nil {
-			return "", fmt.Errorf("failed to encrypt rbd image %s: %v", imageSpec, err)
 		}
 	} else if encrypted != rbdImageEncrypted {
 		return "", fmt.Errorf("rbd image %s found mounted with unexpected encryption status %s",
 			imageSpec, encrypted)
 	}
 
-	devicePath, err = openEncryptedDevice(ctx, volOptions, devicePath, secrets)
+	devicePath, err = openEncryptedDevice(ctx, volOptions, devicePath)
 	if err != nil {
 		return "", err
 	}
@@ -704,8 +730,8 @@ func (ns *NodeServer) processEncryptedDevice(ctx context.Context, volOptions *rb
 	return devicePath, nil
 }
 
-func encryptDevice(ctx context.Context, rbdVol *rbdVolume, secret map[string]string, cr *util.Credentials, devicePath string) error {
-	passphrase, err := util.GetCryptoPassphrase(secret)
+func encryptDevice(ctx context.Context, rbdVol *rbdVolume, cr *util.Credentials, devicePath string) error {
+	passphrase, err := util.GetCryptoPassphrase(ctx, rbdVol.VolID, rbdVol.KMS)
 	if err != nil {
 		klog.Errorf(util.Log(ctx, "failed to get crypto passphrase for %s/%s: %v"),
 			rbdVol.Pool, rbdVol.RbdImageName, err)
@@ -724,8 +750,8 @@ func encryptDevice(ctx context.Context, rbdVol *rbdVolume, secret map[string]str
 	return err
 }
 
-func openEncryptedDevice(ctx context.Context, volOptions *rbdVolume, devicePath string, secrets map[string]string) (string, error) {
-	passphrase, err := util.GetCryptoPassphrase(secrets)
+func openEncryptedDevice(ctx context.Context, volOptions *rbdVolume, devicePath string) (string, error) {
+	passphrase, err := util.GetCryptoPassphrase(ctx, volOptions.VolID, volOptions.KMS)
 	if err != nil {
 		klog.Errorf(util.Log(ctx, "failed to get passphrase for encrypted device %s/%s: %v"),
 			volOptions.Pool, volOptions.RbdImageName, err)

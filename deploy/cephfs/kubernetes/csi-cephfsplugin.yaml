@@ -63,7 +63,6 @@ spec:
             - "--v=5"
             - "--drivername=cephfs.csi.ceph.com"
             - "--metadatastorage=k8s_configmap"
-            - "--mountcachedir=/mount-cache-dir"
             - "--metricsport=8090"
             - "--metricspath=/metrics"
             - "--enablegrpcmetrics=false"
@@ -84,8 +83,6 @@ spec:
               value: unix:///csi/csi.sock
           imagePullPolicy: "IfNotPresent"
           volumeMounts:
-            - name: mount-cache-dir
-              mountPath: /mount-cache-dir
             - name: socket-dir
               mountPath: /csi
             - name: mountpoint-dir
@@ -101,6 +98,8 @@ spec:
               readOnly: true
             - name: host-dev
               mountPath: /dev
+            - name: host-mount
+              mountPath: /run/mount
             - name: ceph-csi-config
               mountPath: /etc/ceph-csi-config/
             - name: keys-tmp-dir
@@ -128,8 +127,6 @@ spec:
               mountPath: /csi
           imagePullPolicy: "IfNotPresent"
       volumes:
-        - name: mount-cache-dir
-          emptyDir: {}
         - name: socket-dir
           hostPath:
             path: /var/lib/kubelet/plugins/cephfs.csi.ceph.com/
@@ -155,6 +152,9 @@ spec:
         - name: host-dev
           hostPath:
             path: /dev
+        - name: host-mount
+          hostPath:
+            path: /run/mount
         - name: ceph-csi-config
           configMap:
             name: ceph-csi-config

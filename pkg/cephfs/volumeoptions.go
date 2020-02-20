@@ -221,7 +221,7 @@ func newVolumeOptionsFromVolID(ctx context.Context, volID string, volOpt, secret
 		return nil, nil, err
 	}
 
-	volOptions.RequestName, vid.FsSubvolName, _, err = volJournal.GetObjectUUIDData(ctx, volOptions.Monitors, cr,
+	volOptions.RequestName, vid.FsSubvolName, _, _, err = volJournal.GetObjectUUIDData(ctx, volOptions.Monitors, cr,
 		volOptions.MetadataPool, vi.ObjectUUID, false)
 	if err != nil {
 		return nil, nil, err
@@ -245,12 +245,12 @@ func newVolumeOptionsFromVolID(ctx context.Context, volID string, volOpt, secret
 		}
 	}
 
+	volOptions.ProvisionVolume = true
+
 	volOptions.RootPath, err = getVolumeRootPathCeph(ctx, &volOptions, cr, volumeID(vid.FsSubvolName))
 	if err != nil {
-		return nil, nil, err
+		return &volOptions, &vid, err
 	}
-
-	volOptions.ProvisionVolume = true
 
 	return &volOptions, &vid, nil
 }

@@ -231,6 +231,12 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 	// Find the volume using the provided VolumeID
 	volOptions, vID, err := newVolumeOptionsFromVolID(ctx, string(volID), nil, secrets)
 	if err != nil {
+		// if error is ErrPoolNotFound, the pool is already deleted we dont
+		// need to worry about deleting subvolume or omap data, return success
+		if _, ok := err.(util.ErrPoolNotFound); ok {
+			klog.Warningf(util.Log(ctx, "failed to get backend volume for %s: %v"), string(volID), err)
+			return &csi.DeleteVolumeResponse{}, nil
+		}
 		// if error is ErrKeyNotFound, then a previous attempt at deletion was complete
 		// or partially complete (subvolume and imageOMap are garbage collected already), hence
 		// return success as deletion is complete
@@ -243,7 +249,23 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 			return cs.deleteVolumeDeprecated(ctx, req)
 		}
 
-		return nil, status.Error(codes.Internal, err.Error())
+		// All errors other than ErrVolumeNotFound should return an error back to the caller
+		if _, ok := err.(ErrVolumeNotFound); !ok {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+
+		// If error is ErrImageNotFound then we failed to find the subvolume, but found the imageOMap
+		// to lead us to the image, hence the imageOMap needs to be garbage collected, by calling
+		// unreserve for the same
+		if acquired := cs.VolumeLocks.TryAcquire(volOptions.RequestName); !acquired {
+			return nil, status.Errorf(codes.Aborted, util.VolumeOperationAlreadyExistsFmt, volOptions.RequestName)
+		}
+		defer cs.VolumeLocks.Release(volOptions.RequestName)
+
+		if err = undoVolReservation(ctx, volOptions, *vID, secrets); err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
+		return &csi.DeleteVolumeResponse{}, nil
 	}
 
 	// lock out parallel delete and create requests against the same volume name as we
@@ -263,7 +285,10 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 
 	if err = purgeVolume(ctx, volumeID(vID.FsSubvolName), cr, volOptions); err != nil {
 		klog.Errorf(util.Log(ctx, "failed to delete volume %s: %v"), volID, err)
-		return nil, status.Error(codes.Internal, err.Error())
+		// All errors other than ErrVolumeNotFound should return an error back to the caller
+		if _, ok := err.(ErrVolumeNotFound); !ok {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
 	}
 
 	if err := undoVolReservation(ctx, volOptions, *vID, secrets); err != nil {

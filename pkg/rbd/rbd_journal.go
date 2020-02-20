@@ -115,7 +115,7 @@ func checkSnapExists(ctx context.Context, rbdSnap *rbdSnapshot, cr *util.Credent
 	}
 
 	snapUUID, err := snapJournal.CheckReservation(ctx, rbdSnap.Monitors, cr, rbdSnap.Pool,
-		rbdSnap.RequestName, rbdSnap.NamePrefix, rbdSnap.RbdImageName)
+		rbdSnap.RequestName, rbdSnap.NamePrefix, rbdSnap.RbdImageName, "")
 	if err != nil {
 		return false, err
 	}
@@ -169,8 +169,12 @@ func checkVolExists(ctx context.Context, rbdVol *rbdVolume, cr *util.Credentials
 		return false, err
 	}
 
+	kmsID := ""
+	if rbdVol.Encrypted {
+		kmsID = rbdVol.KMS.GetID()
+	}
 	imageUUID, err := volJournal.CheckReservation(ctx, rbdVol.Monitors, cr, rbdVol.Pool,
-		rbdVol.RequestName, rbdVol.NamePrefix, "")
+		rbdVol.RequestName, rbdVol.NamePrefix, "", kmsID)
 	if err != nil {
 		return false, err
 	}
@@ -230,7 +234,7 @@ func reserveSnap(ctx context.Context, rbdSnap *rbdSnapshot, cr *util.Credentials
 	)
 
 	snapUUID, rbdSnap.RbdSnapName, err = snapJournal.ReserveName(ctx, rbdSnap.Monitors, cr, rbdSnap.Pool,
-		rbdSnap.RequestName, rbdSnap.NamePrefix, rbdSnap.RbdImageName)
+		rbdSnap.RequestName, rbdSnap.NamePrefix, rbdSnap.RbdImageName, "")
 	if err != nil {
 		return err
 	}
@@ -255,8 +259,13 @@ func reserveVol(ctx context.Context, rbdVol *rbdVolume, cr *util.Credentials) er
 		err       error
 	)
 
+	kmsID := ""
+	if rbdVol.Encrypted {
+		kmsID = rbdVol.KMS.GetID()
+	}
+
 	imageUUID, rbdVol.RbdImageName, err = volJournal.ReserveName(ctx, rbdVol.Monitors, cr, rbdVol.Pool,
-		rbdVol.RequestName, rbdVol.NamePrefix, "")
+		rbdVol.RequestName, rbdVol.NamePrefix, "", kmsID)
 	if err != nil {
 		return err
 	}

@@ -1,8 +1,9 @@
-{{- if .Values.rbac.create -}}
-kind: ClusterRoleBinding
+{{- if and .Values.rbac.create .Values.nodeplugin.podSecurityPolicy.enabled -}}
+kind: RoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: {{ include "ceph-csi-rbd.nodeplugin.fullname" . }}
+  namespace: {{ .Release.Namespace }}
   labels:
     app: {{ include "ceph-csi-rbd.name" . }}
     chart: {{ include "ceph-csi-rbd.chart" . }}
@@ -14,7 +15,7 @@ subjects:
     name: {{ include "ceph-csi-rbd.serviceAccountName.nodeplugin" . }}
     namespace: {{ .Release.Namespace }}
 roleRef:
-  kind: ClusterRole
+  kind: Role
   name: {{ include "ceph-csi-rbd.nodeplugin.fullname" . }}
   apiGroup: rbac.authorization.k8s.io
 {{- end -}}

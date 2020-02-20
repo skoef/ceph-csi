@@ -13,8 +13,10 @@ import (
 var (
 	cephfsProvisioner     = "csi-cephfsplugin-provisioner.yaml"
 	cephfsProvisionerRBAC = "csi-provisioner-rbac.yaml"
+	cephfsProvisionerPSP  = "csi-provisioner-psp.yaml"
 	cephfsNodePlugin      = "csi-cephfsplugin.yaml"
 	cephfsNodePluginRBAC  = "csi-nodeplugin-rbac.yaml"
+	cephfsNodePluginPSP   = "csi-nodeplugin-psp.yaml"
 	cephfsDeploymentName  = "csi-cephfsplugin-provisioner"
 	cephfsDeamonSetName   = "csi-cephfsplugin"
 	cephfsDirPath         = "../deploy/cephfs/kubernetes/"
@@ -28,9 +30,11 @@ func deployCephfsPlugin() {
 	// deploy provisioner
 	framework.RunKubectlOrDie("create", "-f", cephfsDirPath+cephfsProvisioner)
 	framework.RunKubectlOrDie("create", "-f", cephfsDirPath+cephfsProvisionerRBAC)
+	framework.RunKubectlOrDie("create", "-f", cephfsDirPath+cephfsProvisionerPSP)
 	// deploy nodeplugin
 	framework.RunKubectlOrDie("create", "-f", cephfsDirPath+cephfsNodePlugin)
 	framework.RunKubectlOrDie("create", "-f", cephfsDirPath+cephfsNodePluginRBAC)
+	framework.RunKubectlOrDie("create", "-f", cephfsDirPath+cephfsNodePluginPSP)
 }
 
 func deleteCephfsPlugin() {
@@ -42,6 +46,10 @@ func deleteCephfsPlugin() {
 	if err != nil {
 		e2elog.Logf("failed to delete cephfs provisioner rbac %v", err)
 	}
+	_, err = framework.RunKubectl("delete", "-f", cephfsDirPath+cephfsProvisionerPSP)
+	if err != nil {
+		e2elog.Logf("failed to delete cephfs provisioner psp %v", err)
+	}
 	_, err = framework.RunKubectl("delete", "-f", cephfsDirPath+cephfsNodePlugin)
 	if err != nil {
 		e2elog.Logf("failed to delete cephfs nodeplugin %v", err)
@@ -49,6 +57,10 @@ func deleteCephfsPlugin() {
 	_, err = framework.RunKubectl("delete", "-f", cephfsDirPath+cephfsNodePluginRBAC)
 	if err != nil {
 		e2elog.Logf("failed to delete cephfs nodeplugin rbac %v", err)
+	}
+	_, err = framework.RunKubectl("delete", "-f", cephfsDirPath+cephfsNodePluginPSP)
+	if err != nil {
+		e2elog.Logf("failed to delete cephfs nodeplugin psp %v", err)
 	}
 }
 
@@ -153,6 +165,30 @@ var _ = Describe("cephfs", func() {
 						Fail(err.Error())
 					}
 				})
+
+				By("creating a PVC, deleting backing subvolume, and checking successful PV deletion", func() {
+					pvc, err := loadPVC(pvcPath)
+					if pvc == nil {
+						Fail(err.Error())
+					}
+					pvc.Namespace = f.UniqueName
+
+					err = createPVCAndvalidatePV(f.ClientSet, pvc, deployTimeout)
+					if err != nil {
+						Fail(err.Error())
+					}
+
+					err = deleteBackingCephFSVolume(f, pvc)
+					if err != nil {
+						Fail(err.Error())
+					}
+
+					err = deletePVCAndValidatePV(f.ClientSet, pvc, deployTimeout)
+					if err != nil {
+						Fail(err.Error())
+					}
+				})
+
 				By("Resize PVC and check application directory size", func() {
 					v, err := f.ClientSet.Discovery().ServerVersion()
 					if err != nil {
@@ -169,6 +205,15 @@ var _ = Describe("cephfs", func() {
 						}
 					}
 
+				})
+
+				// Make sure this should be last testcase in this file, because
+				// it deletes pool
+				By("Create a PVC and Delete PVC when backend pool deleted", func() {
+					err := pvcDeleteWhenPoolNotFound(pvcPath, true, f)
+					if err != nil {
+						Fail(err.Error())
+					}
 				})
 
 			})

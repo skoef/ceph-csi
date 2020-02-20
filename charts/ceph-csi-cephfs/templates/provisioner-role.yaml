@@ -12,12 +12,15 @@ metadata:
     heritage: {{ .Release.Service }}
 rules:
   - apiGroups: [""]
-    resources: ["endpoints"]
-    verbs: ["get", "watch", "list", "delete", "update", "create"]
-  - apiGroups: [""]
     resources: ["configmaps"]
     verbs: ["get", "list", "watch", "create", "delete"]
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
     verbs: ["get", "watch", "list", "delete", "update", "create"]
+{{- if .Values.provisioner.podSecurityPolicy.enabled }}
+  - apiGroups: ['policy']
+    resources: ['podsecuritypolicies']
+    verbs: ['use']
+    resourceNames: ['{{ include "ceph-csi-cephfs.provisioner.fullname" . }}']
+{{- end -}}
 {{- end -}}

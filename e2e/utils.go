@@ -31,7 +31,9 @@ import (
 )
 
 const (
-	rookNS = "rook-ceph"
+	rookNS        = "rook-ceph"
+	vaultAddr     = "http://vault.default.svc.cluster.local:8200"
+	vaultSecretNs = "/secret/ceph-csi/" // nolint: gosec, #nosec
 )
 
 var poll = 2 * time.Second
@@ -108,14 +110,14 @@ func waitForDeploymentComplete(name, ns string, c clientset.Interface, t int) er
 	return nil
 }
 
-func execCommandInPod(f *framework.Framework, c, ns string, opt *metav1.ListOptions) (string, string) {
+func getCommandInPodOpts(f *framework.Framework, c, ns string, opt *metav1.ListOptions) framework.ExecOptions {
 	cmd := []string{"/bin/sh", "-c", c}
 	podList, err := f.PodClientNS(ns).List(*opt)
 	framework.ExpectNoError(err)
 	Expect(podList.Items).NotTo(BeNil())
 	Expect(err).Should(BeNil())
 
-	podPot := framework.ExecOptions{
+	return framework.ExecOptions{
 		Command:            cmd,
 		PodName:            podList.Items[0].Name,
 		Namespace:          ns,
@@ -125,11 +127,24 @@ func execCommandInPod(f *framework.Framework, c, ns string, opt *metav1.ListOpti
 		CaptureStderr:      true,
 		PreserveWhitespace: true,
 	}
+}
+
+func execCommandInPod(f *framework.Framework, c, ns string, opt *metav1.ListOptions) (string, string) {
+	podPot := getCommandInPodOpts(f, c, ns, opt)
 	stdOut, stdErr, err := f.ExecWithOptions(podPot)
 	if stdErr != "" {
 		e2elog.Logf("stdErr occurred: %v", stdErr)
 	}
 	Expect(err).Should(BeNil())
+	return stdOut, stdErr
+}
+
+func execCommandInPodAndAllowFail(f *framework.Framework, c, ns string, opt *metav1.ListOptions) (string, string) {
+	podPot := getCommandInPodOpts(f, c, ns, opt)
+	stdOut, stdErr, err := f.ExecWithOptions(podPot)
+	if err != nil {
+		e2elog.Logf("command %s failed: %v", c, err)
+	}
 	return stdOut, stdErr
 }
 
@@ -557,21 +572,22 @@ func validatePVCAndAppBinding(pvcPath, appPath string, f *framework.Framework) {
 	}
 }
 
-func getRBDImageSpec(pvcNamespace, pvcName string, f *framework.Framework) (string, error) {
+func getImageInfoFromPVC(pvcNamespace, pvcName string, f *framework.Framework) (string, string, error) {
 	c := f.ClientSet.CoreV1()
 	pvc, err := c.PersistentVolumeClaims(pvcNamespace).Get(pvcName, metav1.GetOptions{})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	pv, err := c.PersistentVolumes().Get(pvc.Spec.VolumeName, metav1.GetOptions{})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
 	imageIDRegex := regexp.MustCompile(`(\w+\-?){5}$`)
 	imageID := imageIDRegex.FindString(pv.Spec.CSI.VolumeHandle)
-	return fmt.Sprintf("replicapool/csi-vol-%s", imageID), nil
+
+	return fmt.Sprintf("csi-vol-%s", imageID), pv.Spec.CSI.VolumeHandle, nil
 }
 
 func getImageMeta(rbdImageSpec, metaKey string, f *framework.Framework) (string, error) {
@@ -598,13 +614,31 @@ func getMountType(appName, appNamespace, mountPath string, f *framework.Framewor
 	return strings.TrimSpace(stdOut), nil
 }
 
-func validateEncryptedPVCAndAppBinding(pvcPath, appPath string, f *framework.Framework) {
+// readVaultSecret method will execute few commands to try read the secret for
+// specified key from inside the vault container:
+//  * authenticate with vault and ignore any stdout (we do not need output)
+//  * issue get request for particular key
+// resulting in stdOut (first entry in tuple) - output that contains the key
+// or stdErr (second entry in tuple) - error getting the key
+func readVaultSecret(key string, f *framework.Framework) (string, string) {
+	loginCmd := fmt.Sprintf("vault login -address=%s sample_root_token_id > /dev/null", vaultAddr)
+	readSecret := fmt.Sprintf("vault kv get -address=%s %s%s", vaultAddr, vaultSecretNs, key)
+	cmd := fmt.Sprintf("%s && %s", loginCmd, readSecret)
+	opt := metav1.ListOptions{
+		LabelSelector: "app=vault",
+	}
+	stdOut, stdErr := execCommandInPodAndAllowFail(f, cmd, "default", &opt)
+	return strings.TrimSpace(stdOut), strings.TrimSpace(stdErr)
+}
+
+func validateEncryptedPVCAndAppBinding(pvcPath, appPath, kms string, f *framework.Framework) {
 	pvc, app := createPVCAndAppBinding(pvcPath, appPath, f)
 
-	rbdImageSpec, err := getRBDImageSpec(pvc.Namespace, pvc.Name, f)
+	rbdImageID, rbdImageHandle, err := getImageInfoFromPVC(pvc.Namespace, pvc.Name, f)
 	if err != nil {
 		Fail(err.Error())
 	}
+	rbdImageSpec := fmt.Sprintf("replicapool/%s", rbdImageID)
 	encryptedState, err := getImageMeta(rbdImageSpec, ".rbd.csi.ceph.com/encrypted", f)
 	if err != nil {
 		Fail(err.Error())
@@ -618,9 +652,25 @@ func validateEncryptedPVCAndAppBinding(pvcPath, appPath string, f *framework.Fra
 	}
 	Expect(mountType).To(Equal("crypt"))
 
+	if kms == "vault" {
+		// check new passphrase created
+		_, stdErr := readVaultSecret(rbdImageHandle, f)
+		if stdErr != "" {
+			Fail(fmt.Sprintf("failed to read passphrase from vault: %s", stdErr))
+		}
+	}
+
 	err = deletePVCAndApp("", f, pvc, app)
 	if err != nil {
 		Fail(err.Error())
+	}
+
+	if kms == "vault" {
+		// check new passphrase created
+		stdOut, _ := readVaultSecret(rbdImageHandle, f)
+		if stdOut != "" {
+			Fail(fmt.Sprintf("passphrase found in vault while should be deleted: %s", stdOut))
+		}
 	}
 }
 
@@ -775,6 +825,24 @@ func validateNormalUserPVCAccess(pvcPath string, f *framework.Framework) {
 // 	})
 // }
 
+func deleteBackingCephFSVolume(f *framework.Framework, pvc *v1.PersistentVolumeClaim) error {
+	volname, _, err := getImageInfoFromPVC(pvc.Namespace, pvc.Name, f)
+	if err != nil {
+		return err
+	}
+
+	opt := metav1.ListOptions{
+		LabelSelector: "app=rook-ceph-tools",
+	}
+	_, stdErr := execCommandInPod(f, "ceph fs subvolume rm myfs "+volname+" csi", rookNS, &opt)
+	Expect(stdErr).Should(BeEmpty())
+
+	if stdErr != "" {
+		return fmt.Errorf("error deleting backing volume %s", volname)
+	}
+	return nil
+}
+
 func listRBDImages(f *framework.Framework) []string {
 	opt := metav1.ListOptions{
 		LabelSelector: "app=rook-ceph-tools",
@@ -849,5 +917,78 @@ func checkDataPersist(pvcPath, appPath string, f *framework.Framework) error {
 	}
 
 	err = deletePVCAndApp("", f, pvc, app)
+	return err
+}
+
+func deleteBackingRBDImage(f *framework.Framework, pvc *v1.PersistentVolumeClaim) error {
+	rbdImage, _, err := getImageInfoFromPVC(pvc.Namespace, pvc.Name, f)
+	if err != nil {
+		return err
+	}
+
+	opt := metav1.ListOptions{
+		LabelSelector: "app=rook-ceph-tools",
+	}
+
+	cmd := fmt.Sprintf("rbd rm %s --pool=replicapool", rbdImage)
+	execCommandInPod(f, cmd, rookNS, &opt)
+	return nil
+}
+
+func deletePool(name string, cephfs bool, f *framework.Framework) {
+	opt := metav1.ListOptions{
+		LabelSelector: "app=rook-ceph-tools",
+	}
+	var cmds = []string{}
+	if cephfs {
+		// ceph fs fail
+		// ceph fs rm myfs --yes-i-really-mean-it
+		// ceph osd pool delete myfs-metadata myfs-metadata
+		// --yes-i-really-mean-it
+		// ceph osd pool delete myfs-data0 myfs-data0
+		// --yes-i-really-mean-it
+		cmds = append(cmds, fmt.Sprintf("ceph fs fail %s", name),
+			fmt.Sprintf("ceph fs rm %s --yes-i-really-mean-it", name),
+			fmt.Sprintf("ceph osd pool delete %s-metadata %s-metadata --yes-i-really-really-mean-it", name, name),
+			fmt.Sprintf("ceph osd pool delete %s-data0 %s-data0 --yes-i-really-really-mean-it", name, name))
+	} else {
+		// ceph osd pool delete replicapool replicapool
+		// --yes-i-really-mean-it
+		cmds = append(cmds, fmt.Sprintf("ceph osd pool delete %s %s --yes-i-really-really-mean-it", name, name))
+	}
+
+	for _, cmd := range cmds {
+		// discard stdErr as some commands prints warning in strErr
+		execCommandInPod(f, cmd, rookNS, &opt)
+	}
+}
+
+func pvcDeleteWhenPoolNotFound(pvcPath string, cephfs bool, f *framework.Framework) error {
+	pvc, err := loadPVC(pvcPath)
+	if err != nil {
+		return err
+	}
+	pvc.Namespace = f.UniqueName
+
+	err = createPVCAndvalidatePV(f.ClientSet, pvc, deployTimeout)
+	if err != nil {
+		return err
+	}
+	if cephfs {
+		err = deleteBackingCephFSVolume(f, pvc)
+		if err != nil {
+			return err
+		}
+		// delete cephfs filesystem
+		deletePool("myfs", cephfs, f)
+	} else {
+		err = deleteBackingRBDImage(f, pvc)
+		if err != nil {
+			return err
+		}
+		// delete rbd pool
+		deletePool("replicapool", cephfs, f)
+	}
+	err = deletePVCAndValidatePV(f.ClientSet, pvc, deployTimeout)
 	return err
 }

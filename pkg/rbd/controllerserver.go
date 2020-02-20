@@ -98,7 +98,7 @@ func (cs *ControllerServer) parseVolCreateRequest(ctx context.Context, req *csi.
 	}
 
 	// if it's NOT SINGLE_NODE_WRITER and it's BLOCK we'll set the parameter to ignore the in-use checks
-	rbdVol, err := genVolFromVolumeOptions(ctx, req.GetParameters(), nil, (isMultiNode && isBlock), false)
+	rbdVol, err := genVolFromVolumeOptions(ctx, req.GetParameters(), req.GetSecrets(), (isMultiNode && isBlock), false)
 	if err != nil {
 		return nil, status.Error(codes.InvalidArgument, err.Error())
 	}
@@ -261,6 +261,12 @@ func (cs *ControllerServer) checkSnapshot(ctx context.Context, req *csi.CreateVo
 		if _, ok := err.(ErrSnapNotFound); !ok {
 			return status.Error(codes.Internal, err.Error())
 		}
+
+		if _, ok := err.(util.ErrPoolNotFound); ok {
+			klog.Errorf(util.Log(ctx, "failed to get backend snapshot for %s: %v"), snapshotID, err)
+			return status.Error(codes.InvalidArgument, err.Error())
+		}
+
 		return status.Error(codes.InvalidArgument, "missing requested Snapshot ID")
 	}
 
@@ -346,7 +352,12 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 	defer cs.VolumeLocks.Release(volumeID)
 
 	rbdVol := &rbdVolume{}
-	if err := genVolFromVolID(ctx, rbdVol, volumeID, cr); err != nil {
+	if err = genVolFromVolID(ctx, rbdVol, volumeID, cr, req.GetSecrets()); err != nil {
+		if _, ok := err.(util.ErrPoolNotFound); ok {
+			klog.Warningf(util.Log(ctx, "failed to get backend volume for %s: %v"), volumeID, err)
+			return &csi.DeleteVolumeResponse{}, nil
+		}
+
 		// If error is ErrInvalidVolID it could be a version 1.0.0 or lower volume, attempt
 		// to process it as such
 		if _, ok := err.(ErrInvalidVolID); ok {
@@ -363,6 +374,7 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 		// or partially complete (image and imageOMap are garbage collected already), hence return
 		// success as deletion is complete
 		if _, ok := err.(util.ErrKeyNotFound); ok {
+			klog.Warningf(util.Log(ctx, "Failed to volume options for %s: %v"), volumeID, err)
 			return &csi.DeleteVolumeResponse{}, nil
 		}
 
@@ -380,7 +392,7 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 		}
 		defer cs.VolumeLocks.Release(rbdVol.RequestName)
 
-		if err := undoVolReservation(ctx, rbdVol, cr); err != nil {
+		if err = undoVolReservation(ctx, rbdVol, cr); err != nil {
 			return nil, status.Error(codes.Internal, err.Error())
 		}
 		return &csi.DeleteVolumeResponse{}, nil
@@ -396,16 +408,22 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 
 	// Deleting rbd image
 	klog.V(4).Infof(util.Log(ctx, "deleting image %s"), rbdVol.RbdImageName)
-	if err := deleteImage(ctx, rbdVol, cr); err != nil {
+	if err = deleteImage(ctx, rbdVol, cr); err != nil {
 		klog.Errorf(util.Log(ctx, "failed to delete rbd image: %s/%s with error: %v"),
 			rbdVol.Pool, rbdVol.RbdImageName, err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
 
-	if err := undoVolReservation(ctx, rbdVol, cr); err != nil {
+	if err = undoVolReservation(ctx, rbdVol, cr); err != nil {
 		klog.Errorf(util.Log(ctx, "failed to remove reservation for volume (%s) with backing image (%s) (%s)"),
 			rbdVol.RequestName, rbdVol.RbdImageName, err)
 		return nil, status.Error(codes.Internal, err.Error())
+	}
+
+	if rbdVol.Encrypted {
+		if err = rbdVol.KMS.DeletePassphrase(rbdVol.VolID); err != nil {
+			klog.V(3).Infof(util.Log(ctx, "failed to clean the passphrase for volume %s: %s"), rbdVol.VolID, err)
+		}
 	}
 
 	return &csi.DeleteVolumeResponse{}, nil
@@ -450,12 +468,23 @@ func (cs *ControllerServer) CreateSnapshot(ctx context.Context, req *csi.CreateS
 
 	// Fetch source volume information
 	rbdVol := new(rbdVolume)
-	err = genVolFromVolID(ctx, rbdVol, req.GetSourceVolumeId(), cr)
+	err = genVolFromVolID(ctx, rbdVol, req.GetSourceVolumeId(), cr, req.GetSecrets())
 	if err != nil {
 		if _, ok := err.(ErrImageNotFound); ok {
 			return nil, status.Errorf(codes.NotFound, "source Volume ID %s not found", req.GetSourceVolumeId())
 		}
+
+		if _, ok := err.(util.ErrPoolNotFound); ok {
+			klog.Errorf(util.Log(ctx, "failed to get backend volume for %s: %v"), req.GetSourceVolumeId(), err)
+			return nil, status.Errorf(codes.Internal, err.Error())
+		}
 		return nil, status.Errorf(codes.Internal, err.Error())
+	}
+
+	// TODO: re-encrypt snapshot with a new passphrase
+	if rbdVol.Encrypted {
+		return nil, status.Errorf(codes.Unimplemented, "source Volume %s is encrypted, "+
+			"snapshotting is not supported currently", rbdVol.VolID)
 	}
 
 	// Check if source volume was created with required image features for snaps
@@ -621,6 +650,13 @@ func (cs *ControllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteS
 
 	rbdSnap := &rbdSnapshot{}
 	if err = genSnapFromSnapID(ctx, rbdSnap, snapshotID, cr); err != nil {
+		// if error is ErrPoolNotFound, the pool is already deleted we dont
+		// need to worry about deleting snapshot or omap data, return success
+		if _, ok := err.(util.ErrPoolNotFound); ok {
+			klog.Warningf(util.Log(ctx, "failed to get backend snapshot for %s: %v"), snapshotID, err)
+			return &csi.DeleteSnapshotResponse{}, nil
+		}
+
 		// if error is ErrKeyNotFound, then a previous attempt at deletion was complete
 		// or partially complete (snap and snapOMap are garbage collected already), hence return
 		// success as deletion is complete
@@ -706,12 +742,23 @@ func (cs *ControllerServer) ControllerExpandVolume(ctx context.Context, req *csi
 	defer cr.DeleteCredentials()
 
 	rbdVol := &rbdVolume{}
-	err = genVolFromVolID(ctx, rbdVol, volID, cr)
+	err = genVolFromVolID(ctx, rbdVol, volID, cr, req.GetSecrets())
 	if err != nil {
 		if _, ok := err.(ErrImageNotFound); ok {
 			return nil, status.Errorf(codes.NotFound, "volume ID %s not found", volID)
 		}
+
+		if _, ok := err.(util.ErrPoolNotFound); ok {
+			klog.Errorf(util.Log(ctx, "failed to get backend volume for %s: %v"), volID, err)
+			return nil, status.Errorf(codes.InvalidArgument, err.Error())
+		}
+
 		return nil, status.Errorf(codes.Internal, err.Error())
+	}
+
+	if rbdVol.Encrypted {
+		return nil, status.Errorf(codes.InvalidArgument, "encrypted volumes do not support resize (%s/%s)",
+			rbdVol.Pool, rbdVol.RbdImageName)
 	}
 
 	// always round up the request size in bytes to the nearest MiB/GiB

@@ -14,8 +14,10 @@ import (
 var (
 	rbdProvisioner     = "csi-rbdplugin-provisioner.yaml"
 	rbdProvisionerRBAC = "csi-provisioner-rbac.yaml"
+	rbdProvisionerPSP  = "csi-provisioner-psp.yaml"
 	rbdNodePlugin      = "csi-rbdplugin.yaml"
 	rbdNodePluginRBAC  = "csi-nodeplugin-rbac.yaml"
+	rbdNodePluginPSP   = "csi-nodeplugin-psp.yaml"
 	configMap          = "csi-config-map.yaml"
 	rbdDirPath         = "../deploy/rbd/kubernetes/"
 	rbdExamplePath     = "../examples/rbd/"
@@ -31,9 +33,11 @@ func deployRBDPlugin() {
 	// deploy provisioner
 	framework.RunKubectlOrDie("create", "-f", rbdDirPath+rbdProvisioner)
 	framework.RunKubectlOrDie("create", "-f", rbdDirPath+rbdProvisionerRBAC)
+	framework.RunKubectlOrDie("create", "-f", rbdDirPath+rbdProvisionerPSP)
 	// deploy nodeplugin
 	framework.RunKubectlOrDie("create", "-f", rbdDirPath+rbdNodePlugin)
 	framework.RunKubectlOrDie("create", "-f", rbdDirPath+rbdNodePluginRBAC)
+	framework.RunKubectlOrDie("create", "-f", rbdDirPath+rbdNodePluginPSP)
 }
 
 func deleteRBDPlugin() {
@@ -45,6 +49,10 @@ func deleteRBDPlugin() {
 	if err != nil {
 		e2elog.Logf("failed to delete provisioner rbac %v", err)
 	}
+	_, err = framework.RunKubectl("delete", "-f", rbdDirPath+rbdProvisionerPSP)
+	if err != nil {
+		e2elog.Logf("failed to delete provisioner psp %v", err)
+	}
 	_, err = framework.RunKubectl("delete", "-f", rbdDirPath+rbdNodePlugin)
 	if err != nil {
 		e2elog.Logf("failed to delete nodeplugin %v", err)
@@ -52,6 +60,10 @@ func deleteRBDPlugin() {
 	_, err = framework.RunKubectl("delete", "-f", rbdDirPath+rbdNodePluginRBAC)
 	if err != nil {
 		e2elog.Logf("failed to delete nodeplugin rbac %v", err)
+	}
+	_, err = framework.RunKubectl("delete", "-f", rbdDirPath+rbdNodePluginPSP)
+	if err != nil {
+		e2elog.Logf("failed to delete nodeplugin psp %v", err)
 	}
 }
 
@@ -65,7 +77,7 @@ var _ = Describe("RBD", func() {
 		deployRBDPlugin()
 		createRBDStorageClass(f.ClientSet, f, make(map[string]string))
 		createRBDSecret(f.ClientSet, f)
-
+		deployVault(f.ClientSet, deployTimeout)
 	})
 
 	AfterEach(func() {
@@ -80,6 +92,7 @@ var _ = Describe("RBD", func() {
 		deleteResource(rbdExamplePath + "secret.yaml")
 		deleteResource(rbdExamplePath + "storageclass.yaml")
 		// deleteResource(rbdExamplePath + "snapshotclass.yaml")
+		deleteVault()
 	})
 
 	Context("Test RBD CSI", func() {
@@ -124,7 +137,19 @@ var _ = Describe("RBD", func() {
 			By("create a PVC and Bind it to an app with encrypted RBD volume", func() {
 				deleteResource(rbdExamplePath + "storageclass.yaml")
 				createRBDStorageClass(f.ClientSet, f, map[string]string{"encrypted": "true"})
-				validateEncryptedPVCAndAppBinding(pvcPath, appPath, f)
+				validateEncryptedPVCAndAppBinding(pvcPath, appPath, "", f)
+				deleteResource(rbdExamplePath + "storageclass.yaml")
+				createRBDStorageClass(f.ClientSet, f, make(map[string]string))
+			})
+
+			By("create a PVC and Bind it to an app with encrypted RBD volume with Vault KMS", func() {
+				deleteResource(rbdExamplePath + "storageclass.yaml")
+				scOpts := map[string]string{
+					"encrypted":       "true",
+					"encryptionKMSID": "vault-test",
+				}
+				createRBDStorageClass(f.ClientSet, f, scOpts)
+				validateEncryptedPVCAndAppBinding(pvcPath, appPath, "vault", f)
 				deleteResource(rbdExamplePath + "storageclass.yaml")
 				createRBDStorageClass(f.ClientSet, f, make(map[string]string))
 			})
@@ -347,7 +372,29 @@ var _ = Describe("RBD", func() {
 					Fail(fmt.Sprintf("could not find image with prefix %s", volumeNamePrefix))
 				}
 			})
+
+			By("validate RBD static FileSystem PVC", func() {
+				err := validateRBDStaticPV(f, appPath, false)
+				if err != nil {
+					Fail(err.Error())
+				}
+			})
+
+			By("validate RBD static Block PVC", func() {
+				err := validateRBDStaticPV(f, rawAppPath, true)
+				if err != nil {
+					Fail(err.Error())
+				}
+			})
+
+			// Make sure this should be last testcase in this file, because
+			// it deletes pool
+			By("Create a PVC and Delete PVC when backend pool deleted", func() {
+				err := pvcDeleteWhenPoolNotFound(pvcPath, false, f)
+				if err != nil {
+					Fail(err.Error())
+				}
+			})
 		})
 	})
-
 })
