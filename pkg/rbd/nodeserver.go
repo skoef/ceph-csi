@@ -496,15 +496,14 @@ func (ns *NodeServer) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpu
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }
 
-// getStagingTargetPath concats NodeUnstageVolumeRequest's target path with
-// with the volumeID
+// getStagingTargetPath concats either NodeStageVolumeRequest's or
+// NodeUnstageVolumeRequest's target path with the volumeID
 func getStagingTargetPath(req interface{}) string {
-	if nsvr, ok := req.(*csi.NodeStageVolumeRequest); ok {
-		return nsvr.GetStagingTargetPath() + "/" + nsvr.GetVolumeId()
-	}
-
-	if nuvr, ok := req.(*csi.NodeUnstageVolumeRequest); ok {
-		return nuvr.GetStagingTargetPath() + "/" + nuvr.GetVolumeId()
+	switch vr := req.(type) {
+	case *csi.NodeStageVolumeRequest:
+		return vr.GetStagingTargetPath() + "/" + vr.GetVolumeId()
+	case *csi.NodeUnstageVolumeRequest:
+		return vr.GetStagingTargetPath() + "/" + vr.GetVolumeId()
 	}
 
 	return ""
