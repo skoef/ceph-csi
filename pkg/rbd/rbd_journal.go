@@ -125,7 +125,7 @@ func checkSnapExists(ctx context.Context, rbdSnap *rbdSnapshot, cr *util.Credent
 
 	// now that we now that the reservation exists, let's get the image name from
 	// the omap
-	_, rbdSnap.RbdSnapName, _, err = volJournal.GetObjectUUIDData(ctx, rbdSnap.Monitors, cr,
+	_, rbdSnap.RbdSnapName, _, _, err = volJournal.GetObjectUUIDData(ctx, rbdSnap.Monitors, cr,
 		rbdSnap.Pool, snapUUID, false)
 	if err != nil {
 		return false, err
@@ -184,7 +184,7 @@ func checkVolExists(ctx context.Context, rbdVol *rbdVolume, cr *util.Credentials
 
 	// now that we now that the reservation exists, let's get the image name from
 	// the omap
-	_, rbdVol.RbdImageName, _, err = volJournal.GetObjectUUIDData(ctx, rbdVol.Monitors, cr,
+	_, rbdVol.RbdImageName, _, _, err = volJournal.GetObjectUUIDData(ctx, rbdVol.Monitors, cr,
 		rbdVol.Pool, imageUUID, false)
 	if err != nil {
 		return false, err

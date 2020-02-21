@@ -350,7 +350,7 @@ Return values:
 	- string: Contains the image name that was reserved for the passed in reqName
 	- error: non-nil in case of any errors
 */
-func (cj *CSIJournal) ReserveName(ctx context.Context, monitors string, cr *Credentials, pool, reqName, namePrefix, parentName, encryptionKmsConfig string) (string, error) {
+func (cj *CSIJournal) ReserveName(ctx context.Context, monitors string, cr *Credentials, pool, reqName, namePrefix, parentName, encryptionKmsConfig string) (string, string, error) {
 	var snapSource bool
 
 	if parentName != "" {
@@ -406,7 +406,7 @@ func (cj *CSIJournal) ReserveName(ctx context.Context, monitors string, cr *Cred
 		err = SetOMapKeyValue(ctx, monitors, cr, pool, cj.namespace, cj.cephUUIDDirectoryPrefix+volUUID,
 			cj.encryptKMSKey, encryptionKmsConfig)
 		if err != nil {
-			return "", err
+			return "", "", err
 		}
 	}
 
@@ -431,19 +431,19 @@ Return values:
 	- string: Contains encryption KMS, if it is an encrypted image
 	- error: non-nil in case of any errors
 */
-func (cj *CSIJournal) GetObjectUUIDData(ctx context.Context, monitors string, cr *Credentials, pool, objectUUID string, snapSource bool) (string, string, string, error) {
+func (cj *CSIJournal) GetObjectUUIDData(ctx context.Context, monitors string, cr *Credentials, pool, objectUUID string, snapSource bool) (string, string, string, string, error) {
 	var sourceName string
 
 	if snapSource && cj.cephSnapSourceKey == "" {
 		err := errors.New("invalid request, cephSnapSourceKey is nil")
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 
 	// TODO: fetch all omap vals in one call, than make multiple listomapvals
 	requestName, err := GetOMapValue(ctx, monitors, cr, pool, cj.namespace,
 		cj.cephUUIDDirectoryPrefix+objectUUID, cj.csiNameKey)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", err
 	}
 
 	// image key was added at some point, so not all volumes will have this key set
@@ -454,7 +454,7 @@ func (cj *CSIJournal) GetObjectUUIDData(ctx context.Context, monitors string, cr
 		// if the key was not found, assume the default key + UUID
 		// otherwise return error
 		if _, ok := err.(ErrKeyNotFound); !ok {
-			return "", "", "", err
+			return "", "", "", "", err
 		}
 
 		if snapSource {
@@ -469,7 +469,7 @@ func (cj *CSIJournal) GetObjectUUIDData(ctx context.Context, monitors string, cr
 		cj.cephUUIDDirectoryPrefix+objectUUID, cj.encryptKMSKey)
 	if err != nil {
 		if _, ok := err.(ErrKeyNotFound); !ok {
-			return "", "", "", fmt.Errorf("OMapVal for %s/%s failed to get encryption KMS value: %s",
+			return "", "", "", "", fmt.Errorf("OMapVal for %s/%s failed to get encryption KMS value: %s",
 				pool, cj.cephUUIDDirectoryPrefix+objectUUID, err)
 		}
 		// ErrKeyNotFound means no encryption KMS was used
@@ -479,7 +479,7 @@ func (cj *CSIJournal) GetObjectUUIDData(ctx context.Context, monitors string, cr
 		sourceName, err = GetOMapValue(ctx, monitors, cr, pool, cj.namespace,
 			cj.cephUUIDDirectoryPrefix+objectUUID, cj.cephSnapSourceKey)
 		if err != nil {
-			return "", "", "", err
+			return "", "", "", "", err
 		}
 	}
 

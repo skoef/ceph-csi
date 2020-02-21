@@ -68,7 +68,7 @@ func checkVolExists(ctx context.Context, volOptions *volumeOptions, secret map[s
 
 	// now that we now that the reservation exists, let's get the volume name from
 	// the omap
-	_, vid.FsSubvolName, _, err = volJournal.GetObjectUUIDData(ctx, volOptions.Monitors, cr,
+	_, vid.FsSubvolName, _, _, err = volJournal.GetObjectUUIDData(ctx, volOptions.Monitors, cr,
 		volOptions.MetadataPool, imageUUID, false)
 	if err != nil {
 		return nil, err
