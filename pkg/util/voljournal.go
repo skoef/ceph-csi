@@ -198,7 +198,7 @@ Return values:
 	there was no reservation found
 	- error: non-nil in case of any errors
 */
-func (cj *CSIJournal) CheckReservation(ctx context.Context, monitors string, cr *Credentials, pool, reqName, namePrefix, parentName, encryptionKmsConfig string) (string, error) {
+func (cj *CSIJournal) CheckReservation(ctx context.Context, monitors string, cr *Credentials, pool, reqName, namePrefix, parentName, kmsConf string) (string, error) {
 	var snapSource bool
 
 	if parentName != "" {
@@ -241,11 +241,11 @@ func (cj *CSIJournal) CheckReservation(ctx context.Context, monitors string, cr 
 			reqName, objUUID, savedReqName)
 	}
 
-	if encryptionKmsConfig != "" {
-		if savedKms != encryptionKmsConfig {
+	if kmsConf != "" {
+		if savedKms != kmsConf {
 			return "", fmt.Errorf("internal state inconsistent, omap encryption KMS"+
 				" mismatch, request KMS (%s) volume UUID (%s) volume omap KMS (%s)",
-				encryptionKmsConfig, objUUID, savedKms)
+				kmsConf, objUUID, savedKms)
 		}
 	}
 
@@ -350,7 +350,7 @@ Return values:
 	- string: Contains the image name that was reserved for the passed in reqName
 	- error: non-nil in case of any errors
 */
-func (cj *CSIJournal) ReserveName(ctx context.Context, monitors string, cr *Credentials, pool, reqName, namePrefix, parentName, encryptionKmsConfig string) (string, string, error) {
+func (cj *CSIJournal) ReserveName(ctx context.Context, monitors string, cr *Credentials, pool, reqName, namePrefix, parentName, kmsConf string) (string, string, error) {
 	var snapSource bool
 
 	if parentName != "" {
@@ -402,9 +402,9 @@ func (cj *CSIJournal) ReserveName(ctx context.Context, monitors string, cr *Cred
 		return "", "", err
 	}
 
-	if encryptionKmsConfig != "" {
+	if kmsConf != "" {
 		err = SetOMapKeyValue(ctx, monitors, cr, pool, cj.namespace, cj.cephUUIDDirectoryPrefix+volUUID,
-			cj.encryptKMSKey, encryptionKmsConfig)
+			cj.encryptKMSKey, kmsConf)
 		if err != nil {
 			return "", "", err
 		}
