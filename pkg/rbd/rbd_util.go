@@ -351,14 +351,9 @@ func genVolFromVolID(ctx context.Context, rbdVol *rbdVolume, volumeID string, cr
 		return err
 	}
 
-<<<<<<< HEAD
-	rbdVol.RequestName, rbdVol.RbdImageName, _, err = volJournal.GetObjectUUIDData(ctx, rbdVol.Monitors, cr,
-		rbdVol.Pool, vi.ObjectUUID, false)
-=======
 	kmsID := ""
-	rbdVol.RequestName, _, kmsID, err = volJournal.GetObjectUUIDData(
-		ctx, rbdVol.Monitors, cr, rbdVol.Pool, vi.ObjectUUID, false)
->>>>>>> 8163552b814b3acd2ac2143ffe097a389d0d3220
+	rbdVol.RequestName, rbdVol.RbdImageName, _, kmsID, err = volJournal.GetObjectUUIDData(ctx, rbdVol.Monitors, cr,
+		rbdVol.Pool, vi.ObjectUUID, false)
 	if err != nil {
 		return err
 	}
@@ -459,15 +454,10 @@ func updateMons(rbdVol *rbdVolume, options, credentials map[string]string) error
 
 func genVolFromVolumeOptions(ctx context.Context, volOptions, credentials map[string]string, disableInUseChecks, isLegacyVolume bool) (*rbdVolume, error) {
 	var (
-<<<<<<< HEAD
 		ok         bool
 		err        error
 		namePrefix string
-=======
-		ok        bool
-		err       error
-		encrypted string
->>>>>>> 8163552b814b3acd2ac2143ffe097a389d0d3220
+		encrypted  string
 	)
 
 	rbdVol := &rbdVolume{}
