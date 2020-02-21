@@ -340,6 +340,29 @@ var _ = Describe("RBD", func() {
 				}
 			})
 
+			By("validate RBD static FileSystem PVC", func() {
+				err := validateRBDStaticPV(f, appPath, false)
+				if err != nil {
+					Fail(err.Error())
+				}
+			})
+
+			By("validate RBD static Block PVC", func() {
+				err := validateRBDStaticPV(f, rawAppPath, true)
+				if err != nil {
+					Fail(err.Error())
+				}
+			})
+
+			// Make sure this should be last testcase in this file, because
+			// it deletes pool
+			By("Create a PVC and Delete PVC when backend pool deleted", func() {
+				err := pvcDeleteWhenPoolNotFound(pvcPath, false, f)
+				if err != nil {
+					Fail(err.Error())
+				}
+			})
+
 			By("create PVC in storageClass with volumeNamePrefix", func() {
 				volumeNamePrefix := "foo-bar-"
 				deleteResource(rbdExamplePath + "storageclass.yaml")
@@ -370,29 +393,6 @@ var _ = Describe("RBD", func() {
 				createRBDStorageClass(f.ClientSet, f, make(map[string]string))
 				if !foundIt {
 					Fail(fmt.Sprintf("could not find image with prefix %s", volumeNamePrefix))
-				}
-			})
-
-			By("validate RBD static FileSystem PVC", func() {
-				err := validateRBDStaticPV(f, appPath, false)
-				if err != nil {
-					Fail(err.Error())
-				}
-			})
-
-			By("validate RBD static Block PVC", func() {
-				err := validateRBDStaticPV(f, rawAppPath, true)
-				if err != nil {
-					Fail(err.Error())
-				}
-			})
-
-			// Make sure this should be last testcase in this file, because
-			// it deletes pool
-			By("Create a PVC and Delete PVC when backend pool deleted", func() {
-				err := pvcDeleteWhenPoolNotFound(pvcPath, false, f)
-				if err != nil {
-					Fail(err.Error())
 				}
 			})
 		})

@@ -308,7 +308,7 @@ func genSnapFromSnapID(ctx context.Context, rbdSnap *rbdSnapshot, snapshotID str
 		return err
 	}
 
-	rbdSnap.RequestName, _, rbdSnap.RbdImageName, _, err = snapJournal.GetObjectUUIDData(ctx, rbdSnap.Monitors,
+	rbdSnap.RequestName, rbdSnap.RbdSnapName, rbdSnap.RbdImageName, _, err = snapJournal.GetObjectUUIDData(ctx, rbdSnap.Monitors,
 		cr, rbdSnap.Pool, vi.ObjectUUID, true)
 	if err != nil {
 		return err
