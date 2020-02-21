@@ -160,7 +160,7 @@ func (ns *NodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 
 	// perform the actual staging and if this fails, have undoStagingTransaction
 	// cleans up for us
-	isStagePathCreated, isMounted, err = ns.stageTransaction(ctx, req, volOptions)
+	isStagePathCreated, isMounted, isEncrypted, err = ns.stageTransaction(ctx, req, volOptions, staticVol)
 	if err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
 	}
@@ -170,13 +170,11 @@ func (ns *NodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 	return &csi.NodeStageVolumeResponse{}, nil
 }
 
-func (ns *NodeServer) stageTransaction(ctx context.Context, req *csi.NodeStageVolumeRequest, volOptions *rbdVolume) (bool, bool, error) {
-	isStagePathCreated := false
-	isMounted := false
-
-	cr, err := util.NewUserCredentials(req.GetSecrets())
+func (ns *NodeServer) stageTransaction(ctx context.Context, req *csi.NodeStageVolumeRequest, volOptions *rbdVolume, staticVol bool) (isStagePathCreated bool, isMounted bool, isEncrypted bool, err error) {
+	var cr *util.Credentials
+	cr, err = util.NewUserCredentials(req.GetSecrets())
 	if err != nil {
-		return isStagePathCreated, isMounted, err
+		return
 	}
 	defer cr.DeleteCredentials()
 
@@ -184,7 +182,7 @@ func (ns *NodeServer) stageTransaction(ctx context.Context, req *csi.NodeStageVo
 	var devicePath string
 	devicePath, err = attachRBDImage(ctx, volOptions, cr)
 	if err != nil {
-		return isStagePathCreated, isMounted, err
+		return
 	}
 
 	klog.V(4).Infof(util.Log(ctx, "rbd image: %s/%s was successfully mapped at %s\n"),
@@ -193,7 +191,7 @@ func (ns *NodeServer) stageTransaction(ctx context.Context, req *csi.NodeStageVo
 	if volOptions.Encrypted {
 		devicePath, err = ns.processEncryptedDevice(ctx, volOptions, devicePath, cr)
 		if err != nil {
-			return isStagePathCreated, isMounted, err
+			return
 		}
 		isEncrypted = true
 	}
@@ -203,7 +201,7 @@ func (ns *NodeServer) stageTransaction(ctx context.Context, req *csi.NodeStageVo
 	isBlock := req.GetVolumeCapability().GetBlock() != nil
 	err = ns.createStageMountPoint(ctx, stagingTargetPath, isBlock)
 	if err != nil {
-		return isStagePathCreated, isMounted, err
+		return
 	}
 
 	isStagePathCreated = true
@@ -211,14 +209,14 @@ func (ns *NodeServer) stageTransaction(ctx context.Context, req *csi.NodeStageVo
 	// nodeStage Path
 	err = ns.mountVolumeToStagePath(ctx, req, staticVol, stagingTargetPath, devicePath)
 	if err != nil {
-		return isStagePathCreated, isMounted, err
+		return
 	}
 	isMounted = true
 
 	// #nosec - allow anyone to write inside the target path
 	err = os.Chmod(stagingTargetPath, 0777)
 
-	return isStagePathCreated, isMounted, err
+	return
 }
 
 func (ns *NodeServer) undoStagingTransaction(ctx context.Context, req *csi.NodeStageVolumeRequest, devicePath string, isStagePathCreated, isMounted, isEncrypted bool) {
