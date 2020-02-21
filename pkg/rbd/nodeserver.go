@@ -170,11 +170,17 @@ func (ns *NodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 	return &csi.NodeStageVolumeResponse{}, nil
 }
 
-func (ns *NodeServer) stageTransaction(ctx context.Context, req *csi.NodeStageVolumeRequest, volOptions *rbdVolume, staticVol bool) (isStagePathCreated bool, isMounted bool, isEncrypted bool, err error) {
+func (ns *NodeServer) stageTransaction(ctx context.Context, req *csi.NodeStageVolumeRequest, volOptions *rbdVolume, staticVol bool) (bool, bool, bool, error) {
+	isStagePathCreated := false
+	isMounted := false
+	isEncrypted := false
+
+	var err error
+
 	var cr *util.Credentials
 	cr, err = util.NewUserCredentials(req.GetSecrets())
 	if err != nil {
-		return
+		return isStagePathCreated, isMounted, isEncrypted, err
 	}
 	defer cr.DeleteCredentials()
 
@@ -182,7 +188,7 @@ func (ns *NodeServer) stageTransaction(ctx context.Context, req *csi.NodeStageVo
 	var devicePath string
 	devicePath, err = attachRBDImage(ctx, volOptions, cr)
 	if err != nil {
-		return
+		return isStagePathCreated, isMounted, isEncrypted, err
 	}
 
 	klog.V(4).Infof(util.Log(ctx, "rbd image: %s/%s was successfully mapped at %s\n"),
@@ -191,7 +197,7 @@ func (ns *NodeServer) stageTransaction(ctx context.Context, req *csi.NodeStageVo
 	if volOptions.Encrypted {
 		devicePath, err = ns.processEncryptedDevice(ctx, volOptions, devicePath, cr)
 		if err != nil {
-			return
+			return isStagePathCreated, isMounted, isEncrypted, err
 		}
 		isEncrypted = true
 	}
@@ -201,7 +207,7 @@ func (ns *NodeServer) stageTransaction(ctx context.Context, req *csi.NodeStageVo
 	isBlock := req.GetVolumeCapability().GetBlock() != nil
 	err = ns.createStageMountPoint(ctx, stagingTargetPath, isBlock)
 	if err != nil {
-		return
+		return isStagePathCreated, isMounted, isEncrypted, err
 	}
 
 	isStagePathCreated = true
@@ -209,14 +215,14 @@ func (ns *NodeServer) stageTransaction(ctx context.Context, req *csi.NodeStageVo
 	// nodeStage Path
 	err = ns.mountVolumeToStagePath(ctx, req, staticVol, stagingTargetPath, devicePath)
 	if err != nil {
-		return
+		return isStagePathCreated, isMounted, isEncrypted, err
 	}
 	isMounted = true
 
 	// #nosec - allow anyone to write inside the target path
 	err = os.Chmod(stagingTargetPath, 0777)
 
-	return
+	return isStagePathCreated, isMounted, isEncrypted, err
 }
 
 func (ns *NodeServer) undoStagingTransaction(ctx context.Context, req *csi.NodeStageVolumeRequest, devicePath string, isStagePathCreated, isMounted, isEncrypted bool) {
