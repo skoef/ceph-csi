@@ -69,7 +69,7 @@ func TestGetStagingPath(t *testing.T) {
 
 	// test with non-handled interface
 	expect = ""
-	stagingPath = getStagingTargetPath(interface{})
+	stagingPath = getStagingTargetPath("")
 	if stagingPath != expect {
 		t.Errorf("getStagingTargetPath() = %s, got %s", stagingPath, expect)
 	}
