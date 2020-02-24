@@ -128,6 +128,9 @@ func (ns *NodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 		volOptions.RbdImageName = volID
 	case isLegacyVolume:
 		volOptions.RbdImageName, err = getLegacyVolumeName(stagingTargetPath)
+		if err != nil {
+			return nil, status.Error(codes.Internal, err.Error())
+		}
 	default:
 		var vi util.CSIIdentifier
 		err = vi.DecomposeCSIID(volID)
@@ -137,10 +140,6 @@ func (ns *NodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 		}
 
 		_, volOptions.RbdImageName, _, _, err = volJournal.GetObjectUUIDData(ctx, volOptions.Monitors, cr, volOptions.Pool, vi.ObjectUUID, false)
-	}
-
-	if err != nil {
-		return nil, status.Error(codes.Internal, err.Error())
 	}
 
 	volOptions.VolID = volID
