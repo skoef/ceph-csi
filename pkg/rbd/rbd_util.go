@@ -883,7 +883,7 @@ func ensureEncryptionMetadataSet(ctx context.Context, cr *util.Credentials, rbdV
 
 	err := vi.DecomposeCSIID(rbdVol.VolID)
 	if err != nil {
-		err = fmt.Errorf("error decoding volume ID (%s) (%s)", err, rbdVol.VolID)
+		err = fmt.Errorf("error decoding volume ID (%s) (%s)", rbdVol.VolID, err)
 		return ErrInvalidVolID{err}
 	}
 
