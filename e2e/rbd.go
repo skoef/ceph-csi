@@ -354,15 +354,6 @@ var _ = Describe("RBD", func() {
 				}
 			})
 
-			// Make sure this should be last testcase in this file, because
-			// it deletes pool
-			By("Create a PVC and Delete PVC when backend pool deleted", func() {
-				err := pvcDeleteWhenPoolNotFound(pvcPath, false, f)
-				if err != nil {
-					Fail(err.Error())
-				}
-			})
-
 			By("create PVC in storageClass with volumeNamePrefix", func() {
 				volumeNamePrefix := "foo-bar-"
 				deleteResource(rbdExamplePath + "storageclass.yaml")
@@ -393,6 +384,15 @@ var _ = Describe("RBD", func() {
 				createRBDStorageClass(f.ClientSet, f, make(map[string]string))
 				if !foundIt {
 					Fail(fmt.Sprintf("could not find image with prefix %s", volumeNamePrefix))
+				}
+			})
+
+			// Make sure this should be last testcase in this file, because
+			// it deletes pool
+			By("Create a PVC and Delete PVC when backend pool deleted", func() {
+				err := pvcDeleteWhenPoolNotFound(pvcPath, false, f)
+				if err != nil {
+					Fail(err.Error())
 				}
 			})
 		})
