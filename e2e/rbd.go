@@ -366,8 +366,14 @@ var _ = Describe("RBD", func() {
 					}
 				}
 
+				// clean up after ourselves
+				err = deletePVCAndValidatePV(f.ClientSet, pvc, deployTimeout)
+				if err != nil {
+					Fail(err.Error())
+				}
 				deleteResource(rbdExamplePath + "storageclass.yaml")
 				createRBDStorageClass(f.ClientSet, f, make(map[string]string))
+
 				if !foundIt {
 					Fail(fmt.Sprintf("could not find image with prefix %s", volumeNamePrefix))
 				}
