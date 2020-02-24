@@ -121,10 +121,14 @@ func (ns *NodeServer) NodeStageVolume(ctx context.Context, req *csi.NodeStageVol
 	}
 
 	// get rbd image name from the volume journal
+	// for static volumes, the image name is actually the volume ID itself
 	// for legacy volumes (v1.0.0), the image name can be found in the staging path
-	if isLegacyVolume {
+	switch {
+	case staticVol:
+		volOptions.RbdImageName = volID
+	case isLegacyVolume:
 		volOptions.RbdImageName, err = getLegacyVolumeName(stagingTargetPath)
-	} else {
+	default:
 		var vi util.CSIIdentifier
 		err = vi.DecomposeCSIID(volID)
 		if err != nil {
