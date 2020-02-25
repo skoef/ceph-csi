@@ -115,11 +115,11 @@ var (
 )
 
 // createImage creates a new ceph image with provision and volume options.
-func createImage(ctx context.Context, pOpts *rbdVolume, volSz int64, cr *util.Credentials) error {
+func createImage(ctx context.Context, pOpts *rbdVolume, cr *util.Credentials) error {
 	var output []byte
 
 	image := pOpts.RbdImageName
-	volSzMiB := fmt.Sprintf("%dM", volSz)
+	volSzMiB := fmt.Sprintf("%dM", util.RoundOffVolSize(pOpts.VolSize))
 
 	logMsg := "rbd: create %s size %s format 2 (features: %s) using mon %s, pool %s "
 	if pOpts.DataPool != "" {
