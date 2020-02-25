@@ -17,8 +17,12 @@ limitations under the License.
 package util
 
 import (
+	"bytes"
 	"context"
+	"crypto/md5"
 	"fmt"
+	"strings"
+	"text/template"
 
 	"github.com/pborman/uuid"
 	"github.com/pkg/errors"
@@ -170,7 +174,33 @@ func (cj *CSIJournal) GetNameForUUID(prefix, uid string, isSnapshot bool) string
 			prefix = defaultVolumeNamingPrefix
 		}
 	}
-	return prefix + uid
+
+	// try to parse namingPrefix into a template
+	// if we fail, assume a static prefix and return a name as such
+	tpl, err := template.New("volumeName").Parse(prefix)
+	if err != nil || !strings.Contains(prefix, "{{") {
+		return prefix + uid
+	}
+
+	// the data we can feed into the template is limited
+	// we only have the UID and the requestName
+	var tplData struct {
+		UUID string
+		Hash string
+	}
+	tplData.UUID = uid
+
+	// hash the UUID
+	tplData.Hash = fmt.Sprintf("%x", md5.Sum([]byte(uid)))
+
+	// try to execute template
+	// again, if we fail, assume static prefix
+	var buf bytes.Buffer
+	if err := tpl.Execute(&buf, tplData); err != nil {
+		return prefix + uid
+	}
+
+	return buf.String()
 }
 
 // SetCSIDirectorySuffix sets the given suffix for the csiDirectory omap
