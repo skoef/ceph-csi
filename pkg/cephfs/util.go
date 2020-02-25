@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 
@@ -131,4 +132,30 @@ func (cs *ControllerServer) validateExpandVolumeRequest(req *csi.ControllerExpan
 	}
 
 	return nil
+}
+
+func webhookCallback(action string, volOpts volumeOptions) {
+	// if no webhook was defined, abort
+	if volOpts.WebhookCallback == "" {
+		return
+	}
+
+	message := map[string]interface{}{
+		"action": action,
+		"type":   "rbd",
+		"data":   volOpts,
+	}
+
+	payload, err := json.Marshal(message)
+	if err != nil {
+		return
+	}
+
+	klog.V(4).Infof("Webhook %s: %s", webhook, payload)
+
+	// do URL callback
+	req, err := http.NewRequest("POST", volOpts.WebhookCallback, bytes.NewBuffer(payload))
+	req.Header.Set("Content-Type", "application/json")
+	// we're not interested in the callback succeeding or not
+	(&http.Client{}).Do(req)
 }

@@ -41,6 +41,7 @@ type volumeOptions struct {
 	ProvisionVolume    bool   `json:"provisionVolume"`
 	KernelMountOptions string `json:"kernelMountOptions"`
 	FuseMountOptions   string `json:"fuseMountOptions"`
+	WebhookCallback    string `json:"webhookCallback`
 }
 
 func validateNonEmptyField(field, fieldName string) error {
@@ -158,6 +159,10 @@ func newVolumeOptions(ctx context.Context, requestName string, volOptions, secre
 		return nil, err
 	}
 
+	if err = extractOptionalOption(&opts.WebhookCallback, "webhookCallback", volOptions); err != nil {
+		return nil, err
+	}
+
 	opts.RequestName = requestName
 
 	cr, err := util.NewAdminCredentials(secret)
@@ -237,6 +242,10 @@ func newVolumeOptionsFromVolID(ctx context.Context, volID string, volOpt, secret
 		}
 
 		if err = extractOptionalOption(&volOptions.FuseMountOptions, "fuseMountOptions", volOpt); err != nil {
+			return nil, nil, err
+		}
+
+		if err = extractOptionalOption(&volOptions.WebhookCallback, "webhookCallback", volOpt); err != nil {
 			return nil, nil, err
 		}
 

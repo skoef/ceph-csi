@@ -233,6 +233,8 @@ func (cs *ControllerServer) createBackingImage(ctx context.Context, rbdVol *rbdV
 			return status.Error(codes.Internal, err.Error())
 		}
 
+		go webhookCallback("create", rbdVol)
+
 		klog.V(4).Infof(util.Log(ctx, "created image %s"), rbdVol.RbdImageName)
 	}
 
@@ -317,6 +319,8 @@ func (cs *ControllerServer) DeleteLegacyVolume(ctx context.Context, req *csi.Del
 		klog.V(3).Infof(util.Log(ctx, "failed to delete legacy rbd image: %s/%s with error: %v"), rbdVol.Pool, rbdVol.VolName, err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+
+	go webhookCallback("delete", rbdVol)
 
 	if err := cs.MetadataStore.Delete(volumeID); err != nil {
 		return nil, status.Error(codes.Internal, err.Error())
@@ -413,6 +417,8 @@ func (cs *ControllerServer) DeleteVolume(ctx context.Context, req *csi.DeleteVol
 			rbdVol.Pool, rbdVol.RbdImageName, err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+
+	go webhookCallback("delete", rbdVol)
 
 	if err = undoVolReservation(ctx, rbdVol, cr); err != nil {
 		klog.Errorf(util.Log(ctx, "failed to remove reservation for volume (%s) with backing image (%s) (%s)"),
@@ -586,6 +592,9 @@ func (cs *ControllerServer) doSnapshot(ctx context.Context, rbdSnap *rbdSnapshot
 		klog.Errorf(util.Log(ctx, "failed to create snapshot: %v"), err)
 		return status.Error(codes.Internal, err.Error())
 	}
+
+	go webhookCallback("create", rbdSnap)
+
 	defer func() {
 		if err != nil {
 			errDefer := deleteSnapshot(ctx, rbdSnap, cr)
@@ -707,6 +716,8 @@ func (cs *ControllerServer) DeleteSnapshot(ctx context.Context, req *csi.DeleteS
 			"failed to delete snapshot: %s/%s with error: %v",
 			rbdSnap.Pool, rbdSnap.RbdSnapName, err)
 	}
+
+	go webhookCallback("delete", rbdSnap)
 
 	return &csi.DeleteSnapshotResponse{}, nil
 }

@@ -63,6 +63,8 @@ func (cs *ControllerServer) createBackingVolume(ctx context.Context, volOptions 
 		}
 	}()
 
+	go webhookCallback("create", volOptions)
+
 	return nil
 }
 
@@ -196,6 +198,8 @@ func (cs *ControllerServer) deleteVolumeDeprecated(ctx context.Context, req *csi
 		klog.Errorf(util.Log(ctx, "failed to delete volume %s: %v"), volID, err)
 		return nil, status.Error(codes.Internal, err.Error())
 	}
+
+	go webhookCallback("delete", &ce.VolOptions)
 
 	if err = deleteCephUserDeprecated(ctx, &ce.VolOptions, cr, volID); err != nil {
 		klog.Errorf(util.Log(ctx, "failed to delete ceph user for volume %s: %v"), volID, err)

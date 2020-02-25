@@ -17,10 +17,12 @@ limitations under the License.
 package rbd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -88,6 +90,7 @@ type rbdVolume struct {
 	DisableInUseChecks bool   `json:"disableInUseChecks"`
 	Encrypted          bool
 	KMS                util.EncryptionKMS
+	WebhookCallback    string `json:"webhookCallback`
 }
 
 // rbdSnapshot represents a CSI snapshot and its RBD snapshot specifics
@@ -97,17 +100,18 @@ type rbdSnapshot struct {
 	// RbdSnapName is the name of the RBD snapshot backing this rbdSnapshot
 	// SnapID is the snapshot ID that is exchanged with CSI drivers, identifying this rbdSnapshot
 	// RequestName is the CSI generated snapshot name for the rbdSnapshot
-	SourceVolumeID string
-	RbdImageName   string
-	NamePrefix     string
-	RbdSnapName    string
-	SnapID         string
-	Monitors       string
-	Pool           string
-	CreatedAt      *timestamp.Timestamp
-	SizeBytes      int64
-	ClusterID      string
-	RequestName    string
+	SourceVolumeID  string
+	RbdImageName    string
+	NamePrefix      string
+	RbdSnapName     string
+	SnapID          string
+	Monitors        string
+	Pool            string
+	CreatedAt       *timestamp.Timestamp
+	SizeBytes       int64
+	ClusterID       string
+	RequestName     string
+	WebhookCallback string `json:"webhookCallback`
 }
 
 var (
@@ -526,6 +530,10 @@ func genVolFromVolumeOptions(ctx context.Context, volOptions, credentials map[st
 		}
 	}
 
+	if webhookCallback, ok := volOptions["webhookCallback"]; ok {
+		rbdVol.WebhookCallback = webhookCallback
+	}
+
 	return rbdVol, nil
 }
 
@@ -543,6 +551,10 @@ func genSnapFromOptions(ctx context.Context, rbdVol *rbdVolume, snapOptions map[
 
 	if namePrefix, ok := snapOptions["snapshotNamePrefix"]; ok {
 		rbdSnap.NamePrefix = namePrefix
+	}
+
+	if webhookCallback, ok := snapOptions["webhookCallback"]; ok {
+		rbdSnap.WebhookCallback = webhookCallback
 	}
 
 	return rbdSnap
@@ -896,4 +908,36 @@ func ensureEncryptionMetadataSet(ctx context.Context, cr *util.Credentials, rbdV
 	}
 
 	return nil
+}
+
+func webhookCallback(action string, rbd interface{}) {
+	var webhook string
+
+	message := map[string]interface{}{
+		"action": action,
+		"type":   "rbd",
+		"data":   rbd,
+	}
+
+	switch rbd.(type) {
+	case *rbdVolume:
+		webhook = rbd.(*rbdVolume).WebhookCallback
+	case *rbdSnapshot:
+		webhook = rbd.(*rbdSnapshot).WebhookCallback
+	}
+
+	payload, err := json.Marshal(message)
+
+	// if no webhook was defined or marshalling failed, abort
+	if webhook == "" || err != nil {
+		return
+	}
+
+	klog.V(4).Infof("Webhook %s: %s", webhook, payload)
+
+	// do URL callback
+	req, err := http.NewRequest("POST", webhook, bytes.NewBuffer(payload))
+	req.Header.Set("Content-Type", "application/json")
+	// we're not interested in the callback succeeding or not
+	(&http.Client{}).Do(req)
 }
